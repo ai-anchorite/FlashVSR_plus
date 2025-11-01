@@ -117,6 +117,8 @@ def model_download(model_name="JunhaoZhuang/FlashVSR"):
     if not os.path.exists(model_dir):
         log(f"Downloading model '{model_name}' from huggingface...", message_type='info')
         snapshot_download(repo_id=model_name, local_dir=model_dir, local_dir_use_symlinks=False, resume_download=True)
+        log("Model download complete!", message_type='finish')
+        print()
 
 def tensor2video(frames: torch.Tensor):
     video_squeezed = frames.squeeze(0)
