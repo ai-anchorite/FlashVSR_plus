@@ -748,7 +748,7 @@ def create_ui():
                                 clear_on_start_checkbox = gr.Checkbox(label="Clear Temp on Start", value=config.get("clear_temp_on_start", False))
                             with gr.Row():                                
                                 open_folder_button = gr.Button("Open Output Folder", size="sm")
-                                clear_temp_button = gr.Button("Clear Temp Files", size="sm", variant="secondary")
+                                # clear_temp_button = gr.Button("Clear Temp Files", size="sm", variant="secondary")
                         with gr.Row():
                             save_status = gr.HTML(
                                 value=random.choice(IDLE_STATES),
@@ -851,8 +851,8 @@ def create_ui():
                             tb_open_folder_btn = gr.Button("📁 Open Outputs", scale=1, size="sm")
                             with gr.Row():
                                 tb_autosave_checkbox = gr.Checkbox(label="Autosave", scale=1, value=initial_autosave_state)
-                            with gr.Row():                               
-                                tb_clear_temp_btn = gr.Button("🗑️ Clear Temp", size="sm", scale=1, variant="stop")
+                            # with gr.Row():                               
+                                # tb_clear_temp_btn = gr.Button("🗑️ Clear Temp", size="sm", scale=1, variant="stop")
                             with gr.Row():
                                 frames_output_quality = gr.Slider(
                                     minimum=1, maximum=10, step=1, value=8, label="Master Output Quality",
@@ -1007,21 +1007,21 @@ def create_ui():
             show_progress="hidden"
         )
         
-        clear_temp_button.click(
-            fn=clear_temp_files, 
-            inputs=[], 
-            outputs=[save_status]
-        ).then(
-            fn=do_sleep,
-            inputs=None,
-            outputs=None,
-            show_progress="hidden"
-        ).then(
-            fn=do_clear,
-            inputs=None,
-            outputs=[save_status],
-            show_progress="hidden"
-        )
+        # clear_temp_button.click(
+            # fn=clear_temp_files, 
+            # inputs=[], 
+            # outputs=[save_status]
+        # ).then(
+            # fn=do_sleep,
+            # inputs=None,
+            # outputs=None,
+            # show_progress="hidden"
+        # ).then(
+            # fn=do_clear,
+            # inputs=None,
+            # outputs=[save_status],
+            # show_progress="hidden"
+        # )
         
         save_button.click(
             fn=save_file_manually, 
@@ -1242,22 +1242,60 @@ def create_ui():
         )
 
         # Clear temp button
-        def clear_toolbox_temp():
-            try:
-                if toolbox_processor.temp_dir.exists():
-                    shutil.rmtree(toolbox_processor.temp_dir)
-                    os.makedirs(toolbox_processor.temp_dir, exist_ok=True)
-                    return "✅ Toolbox temp files cleared."
-                return "ℹ️ Temp directory doesn't exist."
-            except Exception as e:
-                return f"❌ Error clearing temp files: {e}"
+        # def clear_toolbox_temp():
+            # try:
+                # if toolbox_processor.temp_dir.exists():
+                    # shutil.rmtree(toolbox_processor.temp_dir)
+                    # os.makedirs(toolbox_processor.temp_dir, exist_ok=True)
+                    # return "✅ Toolbox temp files cleared."
+                # return "ℹ️ Temp directory doesn't exist."
+            # except Exception as e:
+                # return f"❌ Error clearing temp files: {e}"
         
-        tb_clear_temp_btn.click(
-            fn=clear_toolbox_temp,
-            outputs=[tb_status_message]
-        )
+        # tb_clear_temp_btn.click(
+            # fn=clear_toolbox_temp,
+            # outputs=[tb_status_message]
+        # )
 
-    
+        # Footer with author credits
+        footer_html = """
+        <div style="text-align: center; padding: 10px; margin-top: 20px; font-family: sans-serif;">
+            <hr style="border: 0; height: 1px; background: #333; margin-bottom: 10px;">
+            <h2 style="margin-bottom: 5px;">FlashVSR: Efficient & High-Quality Video Super-Resolution</h2>
+            <div style="display: flex; justify-content: center; align-items: center; gap: 10px; font-size: 0.8em; flex-wrap: wrap;">
+                <!-- GitHub Badge -->
+                <a href="https://github.com/OpenImagingLab/FlashVSR" target="_blank" style="text-decoration: none; display: inline-flex; border-radius: 4px; overflow: hidden;">
+                    <span style="background-color: #555; color: white; padding: 4px 8px;">⭐ GitHub</span>
+                    <span style="background-color: #24292e; color: white; padding: 4px 8px;">Repository</span>
+                </a>
+                <!-- Project Page Badge -->
+                <a href="http://zhuang2002.github.io/FlashVSR" target="_blank" style="text-decoration: none; display: inline-flex; border-radius: 4px; overflow: hidden;">
+                    <span style="background-color: #555; color: white; padding: 4px 8px;">Project</span>
+                    <span style="background-color: #4c1; color: white; padding: 4px 8px;">Page</span>
+                </a>
+                <!-- Hugging Face Model Badge -->
+                <a href="https://huggingface.co/JunhaoZhuang/FlashVSR" target="_blank" style="text-decoration: none; display: inline-flex; border-radius: 4px; overflow: hidden;">
+                    <span style="background-color: #555; color: white; padding: 4px 8px;">🤗 Hugging Face</span>
+                    <span style="background-color: #3b82f6; color: white; padding: 4px 8px;">Model</span>
+                </a>
+                <!-- Hugging Face Dataset Badge -->
+                <a href="https://huggingface.co/datasets/JunhaoZhuang/VSR-120K" target="_blank" style="text-decoration: none; display: inline-flex; border-radius: 4px; overflow: hidden;">
+                    <span style="background-color: #555; color: white; padding: 4px 8px;">🤗 Hugging Face</span>
+                    <span style="background-color: #ff9a00; color: white; padding: 4px 8px;">Dataset</span>
+                </a>
+                <!-- arXiv Badge -->
+                <a href="https://arxiv.org/abs/2510.12747" target="_blank" style="text-decoration: none; display: inline-flex; border-radius: 4px; overflow: hidden;">
+                    <span style="background-color: #555; color: white; padding: 4px 8px;">arXiv</span>
+                    <span style="background-color: #b31b1b; color: white; padding: 4px 8px;">2510.12747</span>
+                </a>
+            </div>
+            <p style="margin-top: 10px; font-size: 0.9em; color: #888;">
+                Thank you for using FlashVSR! Please visit the project page and consider giving the repository a ⭐ on GitHub.
+            </p>
+        </div>
+        """
+        gr.HTML(footer_html)
+        
     return demo
 
 if __name__ == "__main__":
