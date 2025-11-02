@@ -725,13 +725,13 @@ def create_ui():
                         run_button = gr.Button("Start Processing", variant="primary", size="sm")
                         with gr.Group():
                             with gr.Row():
-                                mode_radio = gr.Radio(choices=["tiny", "full"], value="tiny", label="Pipeline Mode", info="'Full' requires 24GB+ VRAM")
+                                mode_radio = gr.Radio(choices=["tiny", "full"], value="tiny", label="Pipeline Mode", info="'Full' requires 24GB(+) VRAM")
                                 seed_number = gr.Number(value=-1, label="Seed", precision=0, info="-1 = random")
                         with gr.Group():
                             with gr.Row():
                                 scale_slider = gr.Slider(minimum=2, maximum=4, step=1, value=2, label="Upscale Factor", info="Designed to upscale small/short AI video. Start with x2...")
                                 tiled_dit_checkbox = gr.Checkbox(label="Enable Tiled DiT", info="Greatly reduces VRAM at the cost of speed.", value=True)
-                            with gr.Row(visible=False) as tiled_dit_options:
+                            with gr.Row(visible=True) as tiled_dit_options:
                                 tile_size_slider = gr.Slider(minimum=64, maximum=512, step=16, value=256, label="Tile Size")
                                 tile_overlap_slider = gr.Slider(minimum=8, maximum=128, step=8, value=24, label="Tile Overlap")
                                 
@@ -773,17 +773,70 @@ def create_ui():
                 # --- Advanced Options ---  
                 with gr.Row():
                     with gr.Accordion("Advanced Options", open=False):
-                        sparse_ratio_slider = gr.Slider(minimum=0.5, maximum=5.0, step=0.1, value=2.0, label="Sparse Ratio", info="Recommended: 1.5 or 2.0. 1.5 → faster; 2.0 → more stable")
-                        kv_ratio_slider = gr.Slider(minimum=1, maximum=8, step=1, value=3, label="KV Ratio", info="Controls the length of the KV cache")
-                        local_range_slider = gr.Slider(minimum=3, maximum=15, step=2, value=11, label="Local Range", info="Recommended: 9 or 11. 9 → sharper details; 11 → more stable results.")
-                        attention_mode_radio = gr.Radio(choices=["sage", "block"], value="sage", label="Attention Mode")
-                        color_fix_checkbox = gr.Checkbox(label="Enable Color Fix", value=True)
-                        tiled_vae_checkbox = gr.Checkbox(label="Enable Tiled VAE", value=True)
-                        unload_dit_checkbox = gr.Checkbox(label="Unload DiT Before Decoding (Saves VRAM)", value=False)
-                        dtype_radio = gr.Radio(choices=["fp16", "bf16"], value="bf16", label="Data Type")
-                        device_textbox = gr.Textbox(value="auto", label="Device", info="E.g.: 'auto', 'cuda:0', 'cpu'")
-                        quality_slider = gr.Slider(minimum=1, maximum=10, step=1, value=8, label="Output Video Quality")
-                        fps_number = gr.Number(value=30, label="Output FPS (Only for image sequence input)", precision=0)
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                sparse_ratio_slider = gr.Slider(
+                                    minimum=0.5, maximum=5.0, step=0.1, value=2.0, 
+                                    label="Sparse Ratio", 
+                                    info="Controls attention sparsity. 1.5 = faster inference, 2.0 = more stable output"
+                                )
+                                local_range_slider = gr.Slider(
+                                    minimum=3, maximum=15, step=2, value=11, 
+                                    label="Local Range", 
+                                    info="Temporal attention window. 9 = sharper details, 11 = smoother/more stable"
+                                )
+                                quality_slider = gr.Slider(
+                                    minimum=1, maximum=10, step=1, value=6, 
+                                    label="Output Video Quality", 
+                                    info="Affects filesize more than visual quality. 4-6 = good balance, 8+ = huge files"
+                                )
+                            with gr.Column(scale=1):
+                                kv_ratio_slider = gr.Slider(
+                                    minimum=1, maximum=8, step=1, value=3, 
+                                    label="KV Cache Ratio", 
+                                    info="Temporal consistency. Higher = less flicker, more VRAM. 3-4 is usually optimal"
+                                )
+                                fps_number = gr.Number(
+                                    value=30, 
+                                    label="Output FPS", 
+                                    precision=0, 
+                                    info="Only used for image sequence inputs (ignored for video files)"
+                                )
+                                device_textbox = gr.Textbox(
+                                    value="auto", 
+                                    label="Device", 
+                                    info="'auto', 'cuda:0', 'cuda:1', or 'cpu'"
+                                )
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                attention_mode_radio = gr.Radio(
+                                    choices=["sage", "block"], 
+                                    value="sage", 
+                                    label="Attention Mode", 
+                                    info="'sage' = default (recommended), 'block' = alternative attention pattern"
+                                )
+                                dtype_radio = gr.Radio(
+                                    choices=["fp16", "bf16"], 
+                                    value="bf16", 
+                                    label="Data Type", 
+                                    info="bf16 = better stability (recommended), fp16 = slightly faster on some GPUs"
+                                )
+                            with gr.Column(scale=1):
+                                color_fix_checkbox = gr.Checkbox(
+                                    label="Enable Color Fix", 
+                                    value=True, 
+                                    info="Corrects color shifts during upscaling"
+                                )
+                                tiled_vae_checkbox = gr.Checkbox(
+                                    label="Enable Tiled VAE", 
+                                    value=True, 
+                                    info="Reduces VRAM usage during decoding (slight speed cost)"
+                                )
+                                unload_dit_checkbox = gr.Checkbox(
+                                    label="Unload DiT Before Decoding", 
+                                    value=False, 
+                                    info="Frees VRAM before VAE decode (slower but saves memory)"
+                                )
 
                 # --- Main Tab's VideoSlider output ---  
                 with gr.Row():
