@@ -425,7 +425,7 @@ def init_pipeline(mode, device, dtype):
     return pipe
 
 # --- Integrated Core Logic Function (Updated) ---
-def run_flashvsr_integrated(
+def run_flashvsr_single(
     input_path,
     mode,
     scale,
@@ -447,7 +447,9 @@ def run_flashvsr_integrated(
     autosave,
     progress=gr.Progress(track_tqdm=True)
 ):
-    if not input_path: raise gr.Error("Please provide an input video or image folder path!")
+    if not input_path:
+        log("No input video provided.", message_type='warning')
+        return None, None, None
     if seed == -1: seed = random.randint(0, 2**32 - 1)
 
     # --- Parameter Preparation ---
@@ -597,7 +599,113 @@ def run_flashvsr_integrated(
         temp_output_path,
         temp_output_path,
         (input_path, temp_output_path)
-    ) 
+    )
+
+
+def run_flashvsr_batch(
+    batch_files,
+    mode,
+    scale,
+    color_fix,
+    tiled_vae,
+    tiled_dit,
+    tile_size,
+    tile_overlap,
+    unload_dit,
+    dtype_str,
+    seed,
+    device,
+    fps_override,
+    quality,
+    attention_mode,
+    sparse_ratio,
+    kv_ratio,
+    local_range,
+    progress=gr.Progress(track_tqdm=True)
+):
+    """Processes a batch of videos through FlashVSR, saving all to a timestamped subfolder."""
+    if not batch_files:
+        log("No files provided for batch processing.", message_type='warning')
+        return None, "⚠️ No files provided for batch processing."
+    
+    # Extract file paths from the uploaded files
+    input_paths = [file.name if hasattr(file, 'name') else file for file in batch_files]
+    total_videos = len(input_paths)
+    
+    log(f"Starting batch processing for {total_videos} videos...", message_type='info')
+    
+    # Create batch subfolder with timestamp
+    batch_folder_name = f"batch_{time.strftime('%Y%m%d_%H%M%S')}"
+    batch_output_dir = os.path.join(OUTPUT_DIR, batch_folder_name)
+    os.makedirs(batch_output_dir, exist_ok=True)
+    
+    batch_messages = [f"🚀 Starting batch process for {total_videos} videos..."]
+    last_output_path = None
+    
+    for i, video_path in enumerate(input_paths):
+        try:
+            # Update batch progress
+            batch_progress = (i / total_videos)
+            progress(batch_progress, desc=f"Batch: Processing video {i+1}/{total_videos}: {os.path.basename(video_path)}")
+            log(f"\n--- Processing video {i+1}/{total_videos}: {os.path.basename(video_path)} ---", message_type='info')
+            batch_messages.append(f"\n--- Video {i+1}/{total_videos}: {os.path.basename(video_path)} ---")
+            
+            # Create a dummy progress object that doesn't interfere with batch progress
+            class DummyProgress:
+                def __call__(self, *args, **kwargs):
+                    pass
+                def tqdm(self, iterable, *args, **kwargs):
+                    return iterable
+            
+            # Process the video using the single video function
+            # Note: We pass autosave=False to prevent double-saving
+            temp_output_path, _, _ = run_flashvsr_single(
+                input_path=video_path,
+                mode=mode,
+                scale=scale,
+                color_fix=color_fix,
+                tiled_vae=tiled_vae,
+                tiled_dit=tiled_dit,
+                tile_size=tile_size,
+                tile_overlap=tile_overlap,
+                unload_dit=unload_dit,
+                dtype_str=dtype_str,
+                seed=seed,
+                device=device,
+                fps_override=fps_override,
+                quality=quality,
+                attention_mode=attention_mode,
+                sparse_ratio=sparse_ratio,
+                kv_ratio=kv_ratio,
+                local_range=local_range,
+                autosave=False,  # Don't autosave to main outputs folder
+                progress=DummyProgress()  # Use dummy progress to avoid conflicts
+            )
+            
+            # Copy the result to the batch subfolder
+            if temp_output_path and os.path.exists(temp_output_path):
+                filename = os.path.basename(temp_output_path)
+                final_path = os.path.join(batch_output_dir, filename)
+                shutil.copy(temp_output_path, final_path)
+                last_output_path = final_path
+                log(f"✅ Saved to batch folder: {final_path}", message_type='finish')
+                batch_messages.append(f"✅ Saved to: {filename}")
+            else:
+                log(f"❌ Processing failed for {os.path.basename(video_path)}", message_type='error')
+                batch_messages.append(f"❌ Processing failed")
+                
+        except Exception as e:
+            log(f"❌ Error processing {os.path.basename(video_path)}: {e}", message_type='error')
+            batch_messages.append(f"❌ Error: {str(e)}")
+            continue
+    
+    progress(1.0, desc="Batch processing complete!")
+    batch_messages.append(f"\n✅ Batch processing complete! All results saved to: {batch_output_dir}")
+    log(f"Batch processing complete! Results saved to: {batch_output_dir}", message_type='finish')
+    
+    # Return the last processed video and a status message
+    status_message = "\n".join(batch_messages)
+    return last_output_path, status_message
 
 
 def open_folder(folder_path):
@@ -731,8 +839,20 @@ def create_ui():
                 with gr.Row():
                     # --- Left-side Column ---                       
                     with gr.Column(scale=1):
-                        input_video = gr.Video(label="Upload Video File", elem_classes="video-window")
-                        run_button = gr.Button("Start Processing", variant="primary", size="sm")
+                        with gr.Tabs() as flashvsr_input_tabs:
+                            with gr.TabItem("Single Video"):
+                                input_video = gr.Video(label="Upload Video File", elem_classes="video-window")
+                                run_button = gr.Button("Start Processing", variant="primary", size="sm")
+                            with gr.TabItem("Batch Video"):
+                                flashvsr_batch_input_files = gr.File(
+                                    label="Upload Multiple Videos for Batch Processing",
+                                    file_count="multiple",
+                                    type="filepath",
+                                    height="320px",                            
+                                )
+                                batch_run_button = gr.Button("Start Batch Processing", variant="primary", size="sm")
+
+                                
                         with gr.Group():
                             with gr.Row():
                                 mode_radio = gr.Radio(choices=["tiny", "full"], value="tiny", label="Pipeline Mode", info="'Full' requires 24GB(+) VRAM")
@@ -755,7 +875,9 @@ def create_ui():
                                 
                     # --- Right-side Column ---      
                     with gr.Column(scale=1):
-                        video_output = gr.Video(label="Output Result", interactive=False, elem_classes="video-window")
+                        with gr.Tabs() as flashvsr_output_tab:
+                            with gr.TabItem("Processed Video"):                        
+                                video_output = gr.Video(label="Output Result", interactive=False, elem_classes="video-window")
                         with gr.Group():
                             with gr.Row():                            
                                 save_button = gr.Button("Save Manually 💾", size="sm", variant="primary")
@@ -1111,12 +1233,37 @@ def create_ui():
         )
 
         run_button.click(
-            fn=run_flashvsr_integrated,
+            fn=run_flashvsr_single,
             inputs=[
                 input_video, mode_radio, scale_slider, color_fix_checkbox, tiled_vae_checkbox,
                 tiled_dit_checkbox, tile_size_slider, tile_overlap_slider, unload_dit_checkbox,
                 dtype_radio, seed_number, device_textbox, fps_number, quality_slider, attention_mode_radio,
                 sparse_ratio_slider, kv_ratio_slider, local_range_slider, autosave_checkbox
+            ],
+            outputs=[video_output, output_file_path, video_slider_output]
+        )
+
+        # Batch processing handler
+        def handle_batch_processing(
+            batch_files, mode, scale, color_fix, tiled_vae, tiled_dit, tile_size, tile_overlap,
+            unload_dit, dtype_str, seed, device, fps_override, quality, attention_mode,
+            sparse_ratio, kv_ratio, local_range
+        ):
+            last_video, status_msg = run_flashvsr_batch(
+                batch_files, mode, scale, color_fix, tiled_vae, tiled_dit, tile_size, tile_overlap,
+                unload_dit, dtype_str, seed, device, fps_override, quality, attention_mode,
+                sparse_ratio, kv_ratio, local_range
+            )
+            # Return the last processed video for that final dramatic reveal!
+            return last_video, last_video, None
+        
+        batch_run_button.click(
+            fn=handle_batch_processing,
+            inputs=[
+                flashvsr_batch_input_files, mode_radio, scale_slider, color_fix_checkbox, tiled_vae_checkbox,
+                tiled_dit_checkbox, tile_size_slider, tile_overlap_slider, unload_dit_checkbox,
+                dtype_radio, seed_number, device_textbox, fps_number, quality_slider, attention_mode_radio,
+                sparse_ratio_slider, kv_ratio_slider, local_range_slider
             ],
             outputs=[video_output, output_file_path, video_slider_output]
         )
