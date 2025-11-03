@@ -179,8 +179,21 @@ def prepare_tensors(path: str, dtype=torch.bfloat16):
 
 def get_input_params(image_tensor, scale):
     N0, h0, w0, _ = image_tensor.shape
+    # Dimensions must be multiples of 128 for proper processing:
+    # - VAE downsamples by 8x (latent space is height//8, width//8)
+    # - DiT patch embedding has stride (1,2,2) -> height//16, width//16
+    # - Window partition requires (height//16) % 8 == 0 and (width//16) % 8 == 0
+    # - Therefore: height % 128 == 0 and width % 128 == 0
     multiple = 128
-    sW, sH, tW, tH = w0 * scale, h0 * scale, max(multiple, (w0 * scale // multiple) * multiple), max(multiple, (h0 * scale // multiple) * multiple)
+    # Calculate scaled dimensions
+    scaled_w = w0 * scale
+    scaled_h = h0 * scale
+    
+    # Round to nearest multiple of 128 to minimize aspect ratio distortion
+    # Using round() instead of floor division to get closest valid dimensions
+    tW = max(multiple, round(scaled_w / multiple) * multiple)
+    tH = max(multiple, round(scaled_h / multiple) * multiple)
+    
     # Use smallest_8n1_geq to round UP and preserve all frames
     F = smallest_8n1_geq(N0 + 4)
     if F == 0: raise RuntimeError(f"Not enough frames. Got {N0 + 4}.")
@@ -193,10 +206,9 @@ def input_tensor_generator(image_tensor: torch.Tensor, device, scale: int = 4, d
         frame_idx = min(i, N0 - 1)
         frame_slice = image_tensor[frame_idx].to(device)
         tensor_bchw = frame_slice.permute(2, 0, 1).unsqueeze(0)
-        upscaled_tensor = F.interpolate(tensor_bchw, size=(h0 * scale, w0 * scale), mode='bicubic', align_corners=False)
-        l, t = max(0, (w0 * scale - tW) // 2), max(0, (h0 * scale - tH) // 2)
-        cropped_tensor = upscaled_tensor[:, :, t:t + tH, l:l + tW]
-        tensor_out = (cropped_tensor.squeeze(0) * 2.0 - 1.0)
+        # Resize directly to target dimensions to preserve aspect ratio
+        upscaled_tensor = F.interpolate(tensor_bchw, size=(tH, tW), mode='bicubic', align_corners=False)
+        tensor_out = (upscaled_tensor.squeeze(0) * 2.0 - 1.0)
         yield tensor_out.to('cpu').to(dtype)
 
 def prepare_input_tensor(image_tensor: torch.Tensor, device, scale: int = 4, dtype=torch.bfloat16):
@@ -207,10 +219,9 @@ def prepare_input_tensor(image_tensor: torch.Tensor, device, scale: int = 4, dty
         frame_idx = min(i, N0 - 1)
         frame_slice = image_tensor[frame_idx].to(device)
         tensor_bchw = frame_slice.permute(2, 0, 1).unsqueeze(0)
-        upscaled_tensor = F.interpolate(tensor_bchw, size=(h0 * scale, w0 * scale), mode='bicubic', align_corners=False)
-        l, t = max(0, (w0 * scale - tW) // 2), max(0, (h0 * scale - tH) // 2)
-        cropped_tensor = upscaled_tensor[:, :, t:t + tH, l:l + tW]
-        tensor_out = (cropped_tensor.squeeze(0) * 2.0 - 1.0).to('cpu').to(dtype)
+        # Resize directly to target dimensions to preserve aspect ratio
+        upscaled_tensor = F.interpolate(tensor_bchw, size=(tH, tW), mode='bicubic', align_corners=False)
+        tensor_out = (upscaled_tensor.squeeze(0) * 2.0 - 1.0).to('cpu').to(dtype)
         frames.append(tensor_out)
     vid_stacked = torch.stack(frames, 0)
     vid_final = vid_stacked.permute(1, 0, 2, 3).unsqueeze(0)
@@ -515,10 +526,18 @@ def run_flashvsr_single(
         else: # Stitch in memory
             # Output should match input frame count - model adds context internally
             num_aligned_frames = N
-            final_output_canvas, weight_sum_canvas = torch.zeros((num_aligned_frames, H*scale, W*scale, C), dtype=torch.float32), torch.zeros((num_aligned_frames, H*scale, W*scale, C), dtype=torch.float32)
+            # Calculate expected output dimensions (rounded to multiple of 128)
+            # Add extra padding to accommodate tiles that may be rounded up
+            expected_H = max(128, round(H * scale / 128) * 128) + 128
+            expected_W = max(128, round(W * scale / 128) * 128) + 128
+            final_output_canvas = torch.zeros((num_aligned_frames, expected_H, expected_W, C), dtype=torch.float32)
+            weight_sum_canvas = torch.zeros((num_aligned_frames, expected_H, expected_W, C), dtype=torch.float32)
+            
             for i in tqdm(range(len(tile_coords)), desc="[FlashVSR] Processing tiles"):
                 x1, y1, x2, y2 = tile_coords[i]
                 input_tile = frames[:, y1:y2, x1:x2, :]
+                tile_h_in, tile_w_in = y2 - y1, x2 - x1
+                
                 LQ_tile, th, tw, F = prepare_input_tensor(input_tile, _device, scale=scale, dtype=dtype)
                 LQ_tile = LQ_tile.to(_device)
                 output_tile_gpu = pipe(
@@ -528,14 +547,67 @@ def run_flashvsr_single(
                 processed_tile_cpu = tensor2video(output_tile_gpu).cpu()
                 # Trim to match input frame count if model output more frames
                 processed_tile_cpu = processed_tile_cpu[:num_aligned_frames]
-                mask = create_feather_mask((processed_tile_cpu.shape[1], processed_tile_cpu.shape[2]), tile_overlap * scale).cpu().permute(0, 2, 3, 1)
-                x1_s, y1_s = x1 * scale, y1 * scale
-                x2_s, y2_s = x1_s + processed_tile_cpu.shape[2], y1_s + processed_tile_cpu.shape[1]
+                
+                # Get actual output tile dimensions (th, tw are the model's rounded dimensions)
+                tile_h_out, tile_w_out = processed_tile_cpu.shape[1], processed_tile_cpu.shape[2]
+                
+                # Calculate position in output canvas based on input tile position
+                # Don't round - use exact scaled position to maintain proper alignment
+                x1_s = x1 * scale
+                y1_s = y1 * scale
+                
+                # The tile may be larger than expected due to rounding to 128
+                # Center the extra pixels around the expected position
+                expected_tile_w = tile_w_in * scale
+                expected_tile_h = tile_h_in * scale
+                offset_x = (tile_w_out - expected_tile_w) // 2
+                offset_y = (tile_h_out - expected_tile_h) // 2
+                
+                # Adjust position to center the rounded tile
+                x1_s = max(0, x1_s - offset_x)
+                y1_s = max(0, y1_s - offset_y)
+                x2_s = min(x1_s + tile_w_out, expected_W)
+                y2_s = min(y1_s + tile_h_out, expected_H)
+                
+                # Crop tile if needed to fit canvas
+                tile_w_actual = x2_s - x1_s
+                tile_h_actual = y2_s - y1_s
+                processed_tile_cpu = processed_tile_cpu[:, :tile_h_actual, :tile_w_actual, :]
+                
+                # Create mask for the actual tile size
+                mask = create_feather_mask((tile_h_actual, tile_w_actual), tile_overlap * scale).cpu().permute(0, 2, 3, 1)
+                
                 final_output_canvas[:, y1_s:y2_s, x1_s:x2_s, :] += processed_tile_cpu * mask
                 weight_sum_canvas[:, y1_s:y2_s, x1_s:x2_s, :] += mask
                 del LQ_tile, output_tile_gpu, processed_tile_cpu, input_tile; clean_vram()
+            
+            # Find the actual content area (where weight > 0)
+            # This avoids black bars from uncovered regions
+            weight_mask = (weight_sum_canvas.sum(dim=(0, 3)) > 0)  # Shape: (H, W)
+            if weight_mask.any():
+                rows_with_content = weight_mask.any(dim=1).nonzero(as_tuple=True)[0]
+                cols_with_content = weight_mask.any(dim=0).nonzero(as_tuple=True)[0]
+                if len(rows_with_content) > 0 and len(cols_with_content) > 0:
+                    content_y1, content_y2 = rows_with_content[0].item(), rows_with_content[-1].item() + 1
+                    content_x1, content_x2 = cols_with_content[0].item(), cols_with_content[-1].item() + 1
+                else:
+                    # Fallback to expected dimensions
+                    content_y1, content_x1 = 0, 0
+                    content_y2 = max(128, round(H * scale / 128) * 128)
+                    content_x2 = max(128, round(W * scale / 128) * 128)
+            else:
+                # Fallback to expected dimensions
+                content_y1, content_x1 = 0, 0
+                content_y2 = max(128, round(H * scale / 128) * 128)
+                content_x2 = max(128, round(W * scale / 128) * 128)
+            
+            # Crop canvases to content area
+            final_output_canvas = final_output_canvas[:, content_y1:content_y2, content_x1:content_x2, :]
+            weight_sum_canvas = weight_sum_canvas[:, content_y1:content_y2, content_x1:content_x2, :]
+            
             weight_sum_canvas[weight_sum_canvas == 0] = 1.0
             final_output_tensor = final_output_canvas / weight_sum_canvas
+            
             # Free the large canvas tensors immediately
             del final_output_canvas, weight_sum_canvas
             clean_vram()
@@ -784,7 +856,7 @@ def analyze_input_video(video_path):
                 </div>
             </div>
             <div style="font-size: 0.8em; color: #999; text-align: center; margin-top: 8px;">
-                💡 Tip: This FlashVSR implementation works better with lower-resolution input (e.g. 540p)
+                ⚠️ Note: Output dimensions should idealy be multiples of 128 (model requirement). Videos with non-standard resolutions may have noticeable aspect ratio changes.
             </div>
         </div>
         '''
@@ -1221,7 +1293,7 @@ def create_ui():
                         interactive=False,
                         video_mode="preview",
                         show_download_button=False,
-                        autoplay=True, 
+                        autoplay=False, 
                         loop=True,
                         height=800,
                         width=1200
