@@ -838,21 +838,21 @@ def analyze_input_video(video_path):
         html = f'''
         <div style="padding: 16px; background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%); border: 1px solid #667eea40; border-radius: 8px; font-family: 'Segoe UI', sans-serif;">
             <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 8px;">
-                <div style="background: rgba(212, 237, 218, 0.15); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
-                    <div style="font-size: 0.75em; color: #999; margin-bottom: 4px;">RESOLUTION</div>
-                    <div style="font-size: 1.1em; font-weight: 600; color: #ddd;">{width}×{height}</div>
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">RESOLUTION</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{width}×{height}</div>
                 </div>
-                <div style="background: rgba(212, 237, 218, 0.15); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
-                    <div style="font-size: 0.75em; color: #999; margin-bottom: 4px;">FRAMES</div>
-                    <div style="font-size: 1.1em; font-weight: 600; color: #ddd;">{frame_count}</div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FRAMES</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{frame_count}</div>
                 </div>
-                <div style="background: rgba(212, 237, 218, 0.15); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
-                    <div style="font-size: 0.75em; color: #999; margin-bottom: 4px;">DURATION</div>
-                    <div style="font-size: 1.1em; font-weight: 600; color: #ddd;">{duration:.2f}s @ {fps:.1f} FPS</div>
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">DURATION</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{duration:.2f}s @ {fps:.1f} FPS</div>
                 </div>
-                <div style="background: rgba(212, 237, 218, 0.15); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
-                    <div style="font-size: 0.75em; color: #999; margin-bottom: 4px;">FILE SIZE</div>
-                    <div style="font-size: 1.1em; font-weight: 600; color: #ddd;">{file_size_display}</div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FILE SIZE</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{file_size_display}</div>
                 </div>
             </div>
             <div style="font-size: 0.8em; color: #999; text-align: center; margin-top: 8px;">
@@ -900,11 +900,19 @@ def preview_resize(video_path, max_width):
     
     new_width, new_height, will_resize = calculate_resize_dimensions(current_width, current_height, max_width)
     
+    # Check if video is small enough to not need tiled DiT (rough threshold)
+    # Tiled DiT is mainly beneficial for larger videos that exceed VRAM
+    pixels = current_width * current_height
+    small_video_threshold = 512 * 512  # ~512p or smaller
+    
     if will_resize:
         reduction = ((current_width * current_height - new_width * new_height) / (current_width * current_height)) * 100
         return f'<div style="padding: 8px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 4px; color: #155724; font-size: 0.9em; text-align: center;">{current_width}×{current_height} → {new_width}×{new_height} ({reduction:.0f}% reduction) ✓</div>'
     else:
-        return f'<div style="padding: 8px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 4px; color: #0c5460; font-size: 0.9em; text-align: center;">{current_width}×{current_height} (no resize needed) ✓</div>'
+        if pixels <= small_video_threshold:
+            return f'<div style="padding: 8px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 4px; color: #0c5460; font-size: 0.9em; text-align: center;">{current_width}×{current_height} (no resize needed) ✓<br><span style=" color: #0c5460; font-size: 0.9em;">💡 Small resolution - consider disabling Tiled DiT for better speed and quality</span></div>'
+        else:
+            return f'<div style="padding: 8px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 4px; color: #0c5460; font-size: 0.9em; text-align: center;">{current_width}×{current_height} (no resize needed) ✓</div>'
 
 def resize_input_video(video_path, max_width, progress=gr.Progress()):
     """
