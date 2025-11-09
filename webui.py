@@ -623,7 +623,7 @@ def run_flashvsr_single(
 ):
     if not input_path:
         log("No input video provided.", message_type='warning')
-        return None, None, None
+        return None, None, None, gr.update(visible=False)
     if seed == -1: seed = random.randint(0, 2**32 - 1)
 
     # --- Parameter Preparation ---
@@ -764,15 +764,15 @@ def run_flashvsr_single(
                     content_y1, content_y2 = rows_with_content[0].item(), rows_with_content[-1].item() + 1
                     content_x1, content_x2 = cols_with_content[0].item(), cols_with_content[-1].item() + 1
                 else:
-                    # Fallback to expected dimensions
+                    # Fallback to expected dimensions (use ceil to match get_input_params)
                     content_y1, content_x1 = 0, 0
-                    content_y2 = max(128, round(H * scale / 128) * 128)
-                    content_x2 = max(128, round(W * scale / 128) * 128)
+                    content_y2 = max(128, math.ceil(H * scale / 128) * 128)
+                    content_x2 = max(128, math.ceil(W * scale / 128) * 128)
             else:
-                # Fallback to expected dimensions
+                # Fallback to expected dimensions (use ceil to match get_input_params)
                 content_y1, content_x1 = 0, 0
-                content_y2 = max(128, round(H * scale / 128) * 128)
-                content_x2 = max(128, round(W * scale / 128) * 128)
+                content_y2 = max(128, math.ceil(H * scale / 128) * 128)
+                content_x2 = max(128, math.ceil(W * scale / 128) * 128)
             
             # Crop canvases to content area
             final_output_canvas = final_output_canvas[:, content_y1:content_y2, content_x1:content_x2, :]
@@ -871,13 +871,143 @@ def run_flashvsr_single(
     
     progress(1, desc="Done!")
     
+    # Generate output analysis
+    output_analysis = analyze_output_video(temp_output_path)
+    
     # Always display the upscaled output video (not the comparison)
     # This makes the manual save button behavior consistent
     return (
         temp_output_path,  # Display the upscaled output
         temp_output_path,  # Path for manual save
-        (input_path, temp_output_path)  # Video slider comparison
+        (input_path, temp_output_path),  # Video slider comparison
+        output_analysis  # Output analysis HTML
     )
+
+
+def analyze_output_video(video_path):
+    """Analyzes output video and returns compact HTML display with visibility update."""
+    if not video_path:
+        return gr.update(visible=False)
+    
+    try:
+        resolved_path = str(Path(video_path).resolve())
+        
+        # Get file size
+        file_size_display = "N/A"
+        if os.path.exists(resolved_path):
+            size_bytes = os.path.getsize(resolved_path)
+            if size_bytes < 1024**2:
+                file_size_display = f"{size_bytes/1024:.1f} KB"
+            elif size_bytes < 1024**3:
+                file_size_display = f"{size_bytes/1024**2:.1f} MB"
+            else:
+                file_size_display = f"{size_bytes/1024**3:.2f} GB"
+        
+        # Try imageio for quick analysis
+        reader = imageio.get_reader(resolved_path)
+        meta = reader.get_meta_data()
+        
+        # Extract info
+        duration = meta.get('duration', 0)
+        fps = meta.get('fps', 30)
+        size = meta.get('size', (0, 0))
+        width, height = int(size[0]), int(size[1]) if isinstance(size, tuple) else (0, 0)
+        
+        # Frame count
+        nframes = meta.get('nframes')
+        if nframes and nframes != float('inf'):
+            frame_count = int(nframes)
+        elif duration and fps:
+            frame_count = int(duration * fps)
+        else:
+            frame_count = 0
+        
+        reader.close()
+        
+        # Build compact HTML display (same styling as input)
+        html = f'''
+        <div style="padding: 16px; background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%); border: 1px solid #667eea40; border-radius: 8px; font-family: 'Segoe UI', sans-serif;">
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 8px;">
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">RESOLUTION</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{width}×{height}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FRAMES</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{frame_count}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">DURATION</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{duration:.2f}s @ {fps:.1f} FPS</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FILE SIZE</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{file_size_display}</div>
+                </div>
+            </div>
+        </div>
+        '''
+        return gr.update(value=html, visible=True)
+        
+    except Exception as e:
+        error_html = f'<div style="padding: 12px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; color: #721c24;">❌ Error analyzing output: {str(e)}</div>'
+        return gr.update(value=error_html, visible=True)
+
+
+def analyze_output_image(image_path):
+    """Analyzes output image and returns compact HTML display with visibility update."""
+    if not image_path:
+        return gr.update(visible=False)
+    
+    try:
+        resolved_path = str(Path(image_path).resolve())
+        
+        # Get file size
+        file_size_display = "N/A"
+        if os.path.exists(resolved_path):
+            size_bytes = os.path.getsize(resolved_path)
+            if size_bytes < 1024**2:
+                file_size_display = f"{size_bytes/1024:.1f} KB"
+            elif size_bytes < 1024**3:
+                file_size_display = f"{size_bytes/1024**2:.1f} MB"
+            else:
+                file_size_display = f"{size_bytes/1024**3:.2f} GB"
+        
+        # Load image to get dimensions
+        img = Image.open(resolved_path)
+        width, height = img.size
+        
+        # Calculate megapixels
+        megapixels = (width * height) / 1_000_000
+        
+        # Build compact HTML display (same styling as input)
+        html = f'''
+        <div style="padding: 16px; background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%); border: 1px solid #667eea40; border-radius: 8px; font-family: 'Segoe UI', sans-serif;">
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 8px;">
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">RESOLUTION</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{width}×{height}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">MEGAPIXELS</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{megapixels:.2f} MP</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FILE SIZE</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{file_size_display}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FORMAT</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{img.format or 'Unknown'}</div>
+                </div>
+            </div>
+        </div>
+        '''
+        return gr.update(value=html, visible=True)
+        
+    except Exception as e:
+        error_html = f'<div style="padding: 12px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; color: #721c24;">❌ Error analyzing output: {str(e)}</div>'
+        return gr.update(value=error_html, visible=True)
 
 
 def analyze_input_image(image_path):
@@ -928,7 +1058,7 @@ def analyze_input_image(image_path):
                 </div>
             </div>
             <div style="font-size: 0.8em; color: #666; text-align: center; margin-top: 8px;">
-                ℹ️ Output maintains exact aspect ratio. Padding is automatically removed during processing.
+                ℹ️ Model requires output frame dimensions in multiples of 128px. We pad input frames to maintain aspect ratio. Padding is removed during upscale processing.
             </div>
         </div>
         '''
@@ -1082,7 +1212,7 @@ def run_flashvsr_batch_image(
                     return iterable
             
             # Process the image using the single image function
-            temp_output_path, _, _ = run_flashvsr_image(
+            temp_output_path, _, _, _ = run_flashvsr_image(
                 image_path=image_path,
                 mode=mode,
                 model_version=model_version,
@@ -1160,7 +1290,7 @@ def run_flashvsr_image(
     """Process a single image by duplicating it 21 times and extracting the middle frame from output."""
     if not image_path:
         log("No input image provided.", message_type='warning')
-        return None, None, None
+        return None, None, None, gr.update(visible=False)
     
     temp_frames_dir = None
     try:
@@ -1171,7 +1301,7 @@ def run_flashvsr_image(
             return None, None, None
         
         # Process through the video pipeline
-        video_output, save_path, slider_data = run_flashvsr_single(
+        video_output, save_path, slider_data, _ = run_flashvsr_single(
             input_path=temp_frames_dir,
             mode=mode,
             model_version=model_version,
@@ -1288,8 +1418,11 @@ def run_flashvsr_image(
             log(f"Could not create comparison: {e}", message_type="warning")
             comparison_tuple = None
         
-        # Return: output_image, output_path_for_save, comparison_tuple_for_slider
-        return temp_image_path, temp_image_path, comparison_tuple
+        # Generate output analysis
+        output_analysis = analyze_output_image(temp_image_path)
+        
+        # Return: output_image, output_path_for_save, comparison_tuple_for_slider, output_analysis
+        return temp_image_path, temp_image_path, comparison_tuple, output_analysis
         
     finally:
         # Cleanup temp frames directory
@@ -1358,7 +1491,7 @@ def run_flashvsr_batch(
             
             # Process the video using the single video function
             # Note: We pass autosave=False to prevent double-saving
-            temp_output_path, _, _ = run_flashvsr_single(
+            temp_output_path, _, _, _ = run_flashvsr_single(
                 input_path=video_path,
                 mode=mode,
                 model_version=model_version,
@@ -1484,7 +1617,7 @@ def analyze_input_video(video_path):
                 </div>
             </div>
             <div style="font-size: 0.8em; color: #666; text-align: center; margin-top: 8px;">
-                ℹ️ Output maintains exact aspect ratio. Padding is automatically removed during processing.
+                ℹ️ Model requires output frame dimensions in multiples of 128px. We pad input frames to maintain aspect ratio. Padding is removed during upscale processing.
             </div>
         </div>
         '''
@@ -2029,7 +2162,7 @@ def process_video_with_chunks(
     """
     if not input_path or not os.path.exists(input_path):
         log("No input video provided for chunk processing", message_type="error")
-        return None, None, None
+        return None, None, None, gr.update(visible=False)
     
     # Generate seed once for all chunks to ensure consistency
     if seed == -1:
@@ -2045,7 +2178,7 @@ def process_video_with_chunks(
     
     if not chunk_paths:
         log("Failed to create chunks", message_type="error")
-        return None, None, None
+        return None, None, None, gr.update(visible=False)
     
     num_chunks = len(chunk_paths)
     log(f"Created {num_chunks} chunks, processing each...", message_type="info")
@@ -2082,7 +2215,7 @@ def process_video_with_chunks(
             # Process this chunk using the main processing function
             # Seed is already fixed at the start, so all chunks use the same seed
             # Note: create_comparison=False for chunks (comparison only works on full video)
-            output_path, _, _ = run_flashvsr_single(
+            output_path, _, _, _ = run_flashvsr_single(
                 input_path=chunk_path,
                 mode=mode,
                 model_version=model_version,
@@ -2127,7 +2260,7 @@ def process_video_with_chunks(
     
     if not processed_chunks:
         log("No chunks were successfully processed", message_type="error")
-        return None, None, None
+        return None, None, None, gr.update(visible=False)
     
     if len(processed_chunks) < num_chunks:
         log(f"Warning: Only {len(processed_chunks)}/{num_chunks} chunks processed successfully", message_type="warning")
@@ -2141,7 +2274,9 @@ def process_video_with_chunks(
     if not combined_path:
         log("Failed to combine chunks", message_type="error")
         # Return first chunk as fallback
-        return processed_chunks[0] if processed_chunks else None, processed_chunks[0] if processed_chunks else None, None
+        fallback_path = processed_chunks[0] if processed_chunks else None
+        fallback_analysis = analyze_output_video(fallback_path) if fallback_path else gr.update(visible=False)
+        return fallback_path, fallback_path, None, fallback_analysis
     
     # Clean up individual processed chunks
     for chunk_path in processed_chunks:
@@ -2173,10 +2308,14 @@ def process_video_with_chunks(
     
     progress(1.0, desc="Done!")
     
+    # Generate output analysis
+    output_analysis = analyze_output_video(temp_output_path)
+    
     return (
         temp_output_path,
         temp_output_path,
-        (input_path, temp_output_path)
+        (input_path, temp_output_path),
+        output_analysis
     )
 
 def open_folder(folder_path):
@@ -2442,6 +2581,7 @@ def create_ui():
                         with gr.Tabs() as flashvsr_output_tab:
                             with gr.TabItem("Processed Video"):                        
                                 video_output = gr.Video(label="Output Result", interactive=False, elem_classes="video-window")
+                        
                         with gr.Group():
                             with gr.Row():                            
                                 save_button = gr.Button("Save Manually 💾", size="sm", variant="primary")
@@ -2474,6 +2614,9 @@ def create_ui():
                                     interactive=False,
                                     elem_classes="monitor-compact"
                                 )
+                        
+                        # Output Analysis Display
+                        video_output_analysis_html = gr.HTML(visible=False)
                                 
                 # --- Advanced Options ---  
                 with gr.Row():
@@ -2656,7 +2799,7 @@ def create_ui():
                             with gr.Row():
                                 img_autosave = gr.Checkbox(label="Autosave Output", value=config.get("autosave", True))
                                 img_create_comparison = gr.Checkbox(label="Create Comparison Image", value=False, info="Side-by-side before/after. Always saved.")
-                                img_clear_on_start = gr.Checkbox(label="Clear Temp on Start", value=config.get("clear_temp_on_start", False))
+                                img_clear_on_start = gr.Checkbox(label="Clear Temp on Start", value=config.get("clear_temp_on_start", False), visible=False)
                             with gr.Row():
                                 img_open_folder_button = gr.Button("Open Output Folder", size="sm")
                         
@@ -2681,6 +2824,9 @@ def create_ui():
                                     interactive=False,
                                     elem_classes="monitor-compact"
                                 )
+                        
+                        # Output Analysis Display
+                        img_output_analysis_html = gr.HTML(visible=False)
                 
                 # --- Advanced Options (mirroring FlashVSR exactly) ---
                 with gr.Row():
@@ -2823,7 +2969,7 @@ def create_ui():
                         img_quality, img_attention_mode, img_sparse_ratio, img_kv_ratio,
                         img_local_range, img_autosave, img_create_comparison
                     ],
-                    outputs=[img_output, img_output_path, img_comparison]
+                    outputs=[img_output, img_output_path, img_comparison, img_output_analysis_html]
                 )
                 
                 # Batch image run button click
@@ -3280,7 +3426,7 @@ def create_ui():
                 dtype_radio, seed_number, device_textbox, fps_number, quality_slider, attention_mode_radio,
                 sparse_ratio_slider, kv_ratio_slider, local_range_slider, autosave_checkbox, create_comparison_checkbox
             ],
-            outputs=[video_output, output_file_path, video_slider_output]
+            outputs=[video_output, output_file_path, video_slider_output, video_output_analysis_html]
         )
         
         # Toggle chunk settings visibility and update preview
@@ -3318,8 +3464,10 @@ def create_ui():
                 unload_dit, dtype_str, seed, device, fps_override, quality, attention_mode,
                 sparse_ratio, kv_ratio, local_range
             )
+            # Generate output analysis for the last video
+            output_analysis = analyze_output_video(last_video) if last_video else gr.update(visible=False)
             # Return the last processed video for that final dramatic reveal!
-            return last_video, last_video, None
+            return last_video, last_video, None, output_analysis
         
         batch_run_button.click(
             fn=handle_batch_processing,
@@ -3329,7 +3477,7 @@ def create_ui():
                 dtype_radio, seed_number, device_textbox, fps_number, quality_slider, attention_mode_radio,
                 sparse_ratio_slider, kv_ratio_slider, local_range_slider
             ],
-            outputs=[video_output, output_file_path, video_slider_output]
+            outputs=[video_output, output_file_path, video_slider_output, video_output_analysis_html]
         )
 
         def update_monitor():
@@ -3343,8 +3491,8 @@ def create_ui():
         def send_to_toolbox(video_path):
             if not video_path:
                 return gr.update(), gr.update(), '<div style="padding: 1px; background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 1px; color: #856404;">⚠️ No video to send!</div>'
-            # Switches to tab 1 (Toolbox) and sets the input video value
-            return gr.update(selected=1), gr.update(value=video_path), '<div style="padding: 1px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 1px; color: #155724;">✅ Video sent to Toolbox!</div>'
+            # Switches to tab 2 (Toolbox) and sets the input video value
+            return gr.update(selected=2), gr.update(value=video_path), '<div style="padding: 1px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 1px; color: #155724;">✅ Video sent to Toolbox!</div>'
 
         send_to_toolbox_btn.click(
             fn=send_to_toolbox,
