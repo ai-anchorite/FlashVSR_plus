@@ -2407,7 +2407,7 @@ def handle_start_pipeline(
     # Frame Adjust params
     fps_mode, speed_factor, frames_use_streaming, frames_quality,
     # Video Loop params
-    loop_type, num_loops,
+    loop_type, num_loops, loop_quality,
     # Export params
     export_format, quality, max_width, output_name, two_pass,
     progress=gr.Progress()
@@ -2431,7 +2431,7 @@ def handle_start_pipeline(
             "fps_mode": fps_mode, "speed_factor": speed_factor, "use_streaming": frames_use_streaming, "output_quality": frames_quality
         },
         "loop": {
-            "loop_type": loop_type, "num_loops": num_loops
+            "loop_type": loop_type, "num_loops": num_loops, "output_quality": loop_quality
         },
         "export": {
             "export_format": export_format, "quality": quality, "max_width": max_width, "output_name": output_name, "two_pass": two_pass
@@ -2441,6 +2441,7 @@ def handle_start_pipeline(
     if len(input_paths) > 1:
         # Batch processing
         final_video, message = toolbox_processor.process_batch(input_paths, selected_ops, params, progress)
+        output_analysis = '<div style="padding: 12px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 6px; color: #0c5460; text-align: center;">Batch processing complete. Analysis not available for batch mode.</div>'
     else:
         # Single video processing
         temp_video, message = toolbox_processor.process_pipeline(input_paths[0], selected_ops, params, progress)
@@ -2454,8 +2455,13 @@ def handle_start_pipeline(
             else:
                 final_video = temp_video # Leave in temp folder for manual save
                 message += "\nℹ️ Autosave is off. Result is in a temporary folder. Use 'Manual Save' to keep it."
+            
+            # Analyze output video
+            output_analysis = toolbox_processor.analyze_video_html(final_video)
+        else:
+            output_analysis = '<div style="padding: 12px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; color: #721c24;">❌ Pipeline failed</div>'
 
-    return final_video, message
+    return final_video, message, output_analysis
     
 # Idle state HTML options for save_status display (compact versions)
 IDLE_STATES = [
@@ -3007,13 +3013,10 @@ def create_ui():
                                 )
                             
                             # Video Analysis Section
-                            tb_analyze_button = gr.Button("📊 Analyze Input Video", size="sm", variant="secondary")
-                            with gr.Accordion("Video Analysis Results", open=False) as tb_analysis_accordion:
-                                tb_video_analysis_output = gr.Textbox(
-                                    container=False,
-                                    lines=12,
-                                    show_label=False,
-                                    interactive=False
+                            tb_analyze_button = gr.Button("📊 Analyze Input Video", size="sm", variant="secondary", visible=False)
+                            with gr.Accordion("📊 Input Video Analysis", open=False) as tb_analysis_accordion:
+                                tb_input_analysis_html = gr.HTML(
+                                    value='<div style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; color: #6c757d; text-align: center;">Upload video to see analysis</div>'
                                 )
 
 
@@ -3022,10 +3025,11 @@ def create_ui():
                         with gr.Tabs():
                             with gr.TabItem("Processed Video"):
                                 processed_video = gr.Video(label="Toolbox Processed Video", interactive=False, elem_classes="video-window")
+                        
                         with gr.Row():
                             tb_use_as_input_btn = gr.Button("Use as Input", size="sm", scale=4)
                             initial_autosave_state = toolbox_processor.autosave_enabled
-                            tb_manual_save_btn = gr.Button("Manual Save 💾", variant="secondary", size="sm", scale=4, visible=not initial_autosave_state)
+                            tb_manual_save_btn = gr.Button("Save Manually 💾", variant="primary", size="sm", scale=4, visible=not initial_autosave_state)
 
                         # --- Settings & File Management Group ---
                         with gr.Group():
@@ -3034,14 +3038,16 @@ def create_ui():
                                 tb_clear_temp_btn = gr.Button("⚠️ Clear Temp Files", size="sm", variant="stop")                                
                             with gr.Row():
                                 tb_autosave_checkbox = gr.Checkbox(label="Autosave", scale=1, value=initial_autosave_state)
-                            with gr.Row():
-                                frames_output_quality = gr.Slider(
-                                    minimum=1, maximum=10, step=1, value=8, label="Master Output Quality",
-                                    info="(1=lowest, 10=highest/near-lossless). Quality 8 is recommended for most users. Quality 10 creates VERY large files. Note: The Export operation will re-encode with its own quality settings if selected in the pipeline."
-                                )
-                        with gr.Row():
-                            tb_status_message = gr.Textbox(label="Toolbox Console", lines=8, interactive=False)                        
 
+                        # Output Video Analysis
+                        with gr.Row():   
+                            with gr.Accordion("📊 Output Video Analysis", open=False) as tb_output_analysis_accordion:                     
+                                tb_output_analysis_html = gr.HTML(
+                                    value='<div style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; color: #6c757d; text-align: center;">Process video to see output analysis</div>'
+                                )
+
+                        with gr.Row():
+                            tb_status_message = gr.Textbox(label="Toolbox Console", lines=8, interactive=False)
                         
                 # --- Accordion for operation settings ---
                 with gr.Accordion("Operations Settings", open=True):
@@ -3051,19 +3057,24 @@ def create_ui():
                             with gr.Row():
                                 gr.Markdown("Adjust video speed and interpolate frames using RIFE AI.")
                             with gr.Row():
-                                process_fps_mode = gr.Radio(
-                                    choices=["No Interpolation", "2x Frames", "4x Frames"], value="2x Frames",  label="RIFE Frame Interpolation",
-                                    info="Select '2x' or '4x' RIFE Interpolation to double or quadruple the frame rate, creating smoother motion. 4x is more intensive and runs the 2x process twice."
+                                with gr.Group():
+                                    process_fps_mode = gr.Radio(
+                                        choices=["No Interpolation", "2x Frames", "4x Frames"], value="2x Frames",  label="RIFE Frame Interpolation",
+                                        info="Select '2x' or '4x' RIFE Interpolation to double or quadruple the frame rate, creating smoother motion. 4x is more intensive and runs the 2x process twice."
+                                    )
+                                    process_speed_factor = gr.Slider(
+                                        minimum=0.5, maximum=2.0, step=0.05, value=1, label="Adjust Video Speed Factor",
+                                        info="Values < 1.0 slow down the video, values > 1.0 speed it up. Affects video and audio."
+                                    )
+                            with gr.Row():
+                                frames_output_quality = gr.Slider(
+                                    minimum=0, maximum=100, step=5, value=85, label="Output Quality",
+                                    info="Quality for interpolated frames. 100=near-lossless (CRF 15), 85=high (CRF 18), 50=medium (CRF 25). Formula: CRF = 35 - (quality/100 × 20)"
                                 )
                                 frames_use_streaming_checkbox = gr.Checkbox(
                                     label="Use Streaming (Low Memory Mode)", value=False,
                                     info="Enable for stable, low-memory RIFE on long videos. This avoids loading all frames into RAM. Note: 'Adjust Video Speed' is ignored in this mode."              
-                                )
-                            with gr.Row():
-                                process_speed_factor = gr.Slider(
-                                    minimum=0.5, maximum=2.0, step=0.05, value=1, label="Adjust Video Speed Factor",
-                                    info="Values < 1.0 slow down the video, values > 1.0 speed it up. Affects video and audio."
-                                )
+                                )                               
                             process_frames_btn = gr.Button("🚀 Process Frames", variant="primary")
 
                         # --- Loop Tab ---
@@ -3072,10 +3083,15 @@ def create_ui():
                                 gr.Markdown("Create looped or ping-pong versions of the video.")
 
                             loop_type_select = gr.Radio(choices=["loop", "ping-pong"], value="loop", label="Loop Type")
-                            num_loops_slider = gr.Slider(
-                                minimum=1, maximum=10, step=1, value=1, label="Number of Loops/Repeats",
-                                info="The video will play its original content, then repeat this many additional times. E.g., 1 loop = 2 total plays of the segment."
-                            )
+                            with gr.Row():                            
+                                num_loops_slider = gr.Slider(
+                                    minimum=1, maximum=10, step=1, value=1, label="Number of Loops/Repeats",
+                                    info="The video will play its original content, then repeat this many additional times. E.g., 1 loop = 2 total plays of the segment."
+                                )
+                                loop_output_quality = gr.Slider(
+                                    minimum=0, maximum=100, step=5, value=85, label="Output Quality",
+                                    info="Quality for looped frames. 100=near-lossless (CRF 15), 85=high (CRF 18), 50=medium (CRF 25). Formula: CRF = 35 - (quality/100 × 20)"
+                                )
                             create_loop_btn = gr.Button("🔁 Create Loop", variant="primary")
                             
                         # --- Export Tab ---
@@ -3089,8 +3105,8 @@ def create_ui():
                                         info="H.264: Universal compatibility. H.265: 30-50% smaller files, slower encoding. VP9: Great for web. GIF: Short loops."
                                     )
                                     export_quality_slider = gr.Slider(
-                                        0, 100, value=85, step=1, label="Quality",
-                                        info="100=near-lossless (large), 85=high quality (balanced), 50=medium, 0=low. Higher = larger files."
+                                        0, 100, value=85, step=4, label="Quality",
+                                        info="Quality for exported frames. 100=near-lossless (CRF 15), 85=high (CRF 18), 50=medium (CRF 25). Formula: CRF = 35 - (quality/100 × 20)"
                                     )
                                     export_two_pass = gr.Checkbox(
                                         label="Two-Pass Encoding",
@@ -3834,7 +3850,7 @@ def create_ui():
         )
         
         tb_clear_temp_btn.click(
-            fn=lambda: clear_temp_files(),
+            fn=lambda: re.sub(r'<[^>]+>', '', clear_temp_files()),  # Strip HTML tags for textbox
             inputs=[],
             outputs=[tb_status_message]
         )
@@ -3856,12 +3872,12 @@ def create_ui():
     
         def handle_single_operation(operation_func, video_path, status_message, **kwargs):
             if not video_path:
-                return None, "⚠️ No input video found."
+                return None, "⚠️ No input video found.", '<div style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; color: #6c757d; text-align: center;">Process video to see output analysis</div>'
 
             temp_video = operation_func(video_path, progress=gr.Progress(), **kwargs)
 
             if not temp_video or temp_video == video_path:
-                return video_path, f"❌ {status_message} failed. Check console."
+                return video_path, f"❌ {status_message} failed. Check console.", '<div style="padding: 12px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; color: #721c24;">❌ Operation failed</div>'
 
             final_video_path = temp_video
             message = f"✅ {status_message} complete."
@@ -3874,45 +3890,51 @@ def create_ui():
             else:
                 message += "\nℹ️ Autosave is off. Result is temporary. Use 'Manual Save'."
             
-            return final_video_path, message        
+            # Analyze output video
+            output_analysis = toolbox_processor.analyze_video_html(final_video_path)
+            
+            return final_video_path, message, output_analysis        
 
         process_frames_btn.click(
             lambda video_path, status, fps, speed, stream, quality: handle_single_operation(toolbox_processor.adjust_frames, video_path, status, fps_mode=fps, speed_factor=speed, use_streaming=stream, output_quality=quality),
             inputs=[tb_input_video, gr.Textbox("Frame Adjustment", visible=False), process_fps_mode, process_speed_factor, frames_use_streaming_checkbox, frames_output_quality],
-            outputs=[processed_video, tb_status_message]
+            outputs=[processed_video, tb_status_message, tb_output_analysis_html]
         )
         
-        def handle_create_loop(video_path, loop_type, num_loops, progress=gr.Progress()):
+        def handle_create_loop(video_path, loop_type, num_loops, quality, progress=gr.Progress()):
             if not video_path:
-                return None, "⚠️ No video provided for loop creation."
+                return None, "⚠️ No video provided for loop creation.", '<div style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; color: #6c757d; text-align: center;">Process video to see output analysis</div>'
             
-            output_video = toolbox_processor.create_loop(video_path, loop_type, num_loops, progress)
+            output_video = toolbox_processor.create_loop(video_path, loop_type, num_loops, quality, progress)
             
             if output_video:
                 message = f"✅ Loop created successfully: {os.path.basename(output_video)}"
+                final_video = output_video
                 if toolbox_processor.autosave_enabled:
                     temp_path = Path(output_video)
                     final_path = toolbox_processor.output_dir / temp_path.name
                     final_video = toolbox_processor._copy_to_permanent_storage(output_video, final_path)
                     message += f"\n✅ Autosaved to: {final_path}"
-                    return final_video, message
                 else:
                     message += "\nℹ️ Autosave is off. Use 'Manual Save' to keep it."
-                    return output_video, message
+                
+                # Analyze output video
+                output_analysis = toolbox_processor.analyze_video_html(final_video)
+                return final_video, message, output_analysis
             else:
-                return None, "❌ Loop creation failed. Check console for details."
+                return None, "❌ Loop creation failed. Check console for details.", '<div style="padding: 12px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; color: #721c24;">❌ Operation failed</div>'
     
     
         create_loop_btn.click(
             fn=handle_create_loop, 
-            inputs=[tb_input_video, loop_type_select, num_loops_slider], 
-            outputs=[processed_video, tb_status_message]
+            inputs=[tb_input_video, loop_type_select, num_loops_slider, loop_output_quality], 
+            outputs=[processed_video, tb_status_message, tb_output_analysis_html]
         )
         
         export_video_btn.click(
             lambda video_path, status, format, quality, width, name, two_pass: handle_single_operation(toolbox_processor.export_video, video_path, status, export_format=format, quality=quality, max_width=width, output_name=name, two_pass=two_pass),
             inputs=[tb_input_video, gr.Textbox("Exporting", visible=False), export_format_radio, export_quality_slider, export_resize_slider, export_name_input, export_two_pass],
-            outputs=[processed_video, tb_status_message]
+            outputs=[processed_video, tb_status_message, tb_output_analysis_html]
         )
 
         def handle_manual_save(video_path_from_player):
@@ -3945,13 +3967,20 @@ def create_ui():
 
         # Analyze video button - also opens the accordion
         def analyze_and_open(video_path):
-            analysis_result = toolbox_processor.analyze_video(video_path)
-            return analysis_result, gr.update(open=True)
+            analysis_html = toolbox_processor.analyze_video_html(video_path)
+            return analysis_html, gr.update(open=True)
+        
+        # Auto-analyze input video when it changes
+        tb_input_video.change(
+            fn=lambda video_path: toolbox_processor.analyze_video_html(video_path),
+            inputs=[tb_input_video],
+            outputs=[tb_input_analysis_html]
+        )
         
         tb_analyze_button.click(
             fn=analyze_and_open,
             inputs=[tb_input_video],
-            outputs=[tb_video_analysis_output, tb_analysis_accordion]
+            outputs=[tb_input_analysis_html, tb_analysis_accordion]
         )
 
         # Wire up the pipeline button
@@ -3970,6 +3999,7 @@ def create_ui():
                 # Video Loop params
                 loop_type_select,
                 num_loops_slider,
+                loop_output_quality,
                 # Export params
                 export_format_radio,
                 export_quality_slider,
@@ -3977,19 +4007,21 @@ def create_ui():
                 export_name_input,
                 export_two_pass
             ],
-            outputs=[processed_video, tb_status_message]
+            outputs=[processed_video, tb_status_message, tb_output_analysis_html]
         )
 
         # Use as Input button - sends processed video back to input
         def use_as_input(video_path):
             if not video_path:
-                return None, "⚠️ No processed video to use as input."
-            return video_path, "✅ Processed video loaded as input."
+                return None, "⚠️ No processed video to use as input.", '<div style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; color: #6c757d; text-align: center;">Upload video to see analysis</div>'
+            # Analyze the video being moved to input
+            input_analysis = toolbox_processor.analyze_video_html(video_path)
+            return video_path, "✅ Processed video loaded as input.", input_analysis
         
         tb_use_as_input_btn.click(
             fn=use_as_input,
             inputs=[processed_video],
-            outputs=[tb_input_video, tb_status_message]
+            outputs=[tb_input_video, tb_status_message, tb_input_analysis_html]
         )
 
 

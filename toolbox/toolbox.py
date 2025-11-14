@@ -128,6 +128,220 @@ class ToolboxProcessor:
         except Exception as e:
             return f"❌ Error opening folder: {e}"
 
+    def analyze_video_html(self, video_path):
+        """Analyzes video file and returns detailed HTML information for display."""
+        if not video_path:
+            return '<div style="padding: 12px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;">⚠️ No video provided for analysis</div>'
+        
+        # Normalize input path to prevent filename length issues
+        video_path = self._normalize_input_path(video_path)
+        
+        resolved_path = str(Path(video_path).resolve())
+        
+        # Get file size
+        file_size_display = "N/A"
+        try:
+            if os.path.exists(resolved_path):
+                size_bytes = os.path.getsize(resolved_path)
+                if size_bytes < 1024**2:
+                    file_size_display = f"{size_bytes/1024:.1f} KB"
+                elif size_bytes < 1024**3:
+                    file_size_display = f"{size_bytes/1024**2:.1f} MB"
+                else:
+                    file_size_display = f"{size_bytes/1024**3:.2f} GB"
+        except Exception as e:
+            print(f"Warning: Could not get file size: {e}")
+        
+        # Initialize variables
+        video_width, video_height = 0, 0
+        duration = 0.0
+        calculated_fps = 0.0
+        num_frames_value = 0
+        duration_display, fps_display, resolution_display = "N/A", "N/A", "N/A"
+        nframes_display, has_audio_str = "N/A", "No"
+        codec_info = "N/A"
+        bitrate_display = "N/A"
+        analysis_source = "imageio"
+        
+        # Try ffprobe first if available
+        if self.has_ffmpeg and self.ffprobe_exe:
+            try:
+                probe_cmd = [
+                    self.ffprobe_exe, "-v", "error", "-show_format", "-show_streams",
+                    "-of", "json", resolved_path
+                ]
+                result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True, errors='ignore')
+                probe_data = json.loads(result.stdout)
+                
+                video_stream = next((s for s in probe_data.get("streams", []) if s.get("codec_type") == "video"), None)
+                audio_stream = next((s for s in probe_data.get("streams", []) if s.get("codec_type") == "audio"), None)
+                
+                if video_stream:
+                    analysis_source = "ffprobe"
+                    
+                    # Duration
+                    duration_str = probe_data.get("format", {}).get("duration", "0")
+                    duration = float(duration_str) if duration_str and duration_str.replace('.', '', 1).isdigit() else 0.0
+                    duration_display = f"{duration:.2f}s"
+                    
+                    # Bitrate
+                    bitrate_str = probe_data.get("format", {}).get("bit_rate", "0")
+                    if bitrate_str and bitrate_str.isdigit():
+                        bitrate_mbps = int(bitrate_str) / 1_000_000
+                        bitrate_display = f"{bitrate_mbps:.1f} Mbps"
+                    
+                    # Codec
+                    codec_name = video_stream.get("codec_name", "N/A")
+                    codec_long = video_stream.get("codec_long_name", "")
+                    if "H.264" in codec_long or "AVC" in codec_long:
+                        codec_info = "H.264/AVC"
+                    elif "H.265" in codec_long or "HEVC" in codec_long:
+                        codec_info = "H.265/HEVC"
+                    elif "VP9" in codec_long:
+                        codec_info = "VP9"
+                    elif "VP8" in codec_long:
+                        codec_info = "VP8"
+                    else:
+                        codec_info = codec_name.upper()
+                    
+                    # FPS
+                    def parse_fps(fps_s):
+                        if isinstance(fps_s, (int, float)):
+                            return float(fps_s)
+                        if isinstance(fps_s, str) and "/" in fps_s:
+                            try:
+                                num, den = map(float, fps_s.split('/'))
+                                return num / den if den != 0 else 0.0
+                            except ValueError:
+                                return 0.0
+                        try:
+                            return float(fps_s)
+                        except ValueError:
+                            return 0.0
+                    
+                    r_frame_rate = video_stream.get("r_frame_rate", "0/0")
+                    avg_frame_rate = video_stream.get("avg_frame_rate", "0/0")
+                    r_fps = parse_fps(r_frame_rate)
+                    avg_fps = parse_fps(avg_frame_rate)
+                    
+                    if r_fps > 0:
+                        calculated_fps = r_fps
+                        fps_display = f"{r_fps:.1f} FPS"
+                    if avg_fps > 0 and abs(r_fps - avg_fps) > 0.01:
+                        calculated_fps = avg_fps
+                        fps_display = f"{avg_fps:.1f} FPS"
+                    elif avg_fps > 0 and r_fps <= 0:
+                        calculated_fps = avg_fps
+                        fps_display = f"{avg_fps:.1f} FPS"
+                    
+                    # Resolution
+                    video_width = video_stream.get("width", 0)
+                    video_height = video_stream.get("height", 0)
+                    resolution_display = f"{video_width}×{video_height}"
+                    
+                    # Frame count
+                    nframes_str = video_stream.get("nb_frames")
+                    if nframes_str and nframes_str.isdigit():
+                        num_frames_value = int(nframes_str)
+                        nframes_display = str(num_frames_value)
+                    elif duration > 0 and calculated_fps > 0:
+                        num_frames_value = int(duration * calculated_fps)
+                        nframes_display = f"{num_frames_value}"
+                    
+                    # Audio
+                    if audio_stream:
+                        audio_codec = audio_stream.get('codec_name', 'N/A').upper()
+                        audio_channels = audio_stream.get('channels', 'N/A')
+                        audio_rate = audio_stream.get('sample_rate', 'N/A')
+                        if audio_rate != 'N/A':
+                            audio_rate = f"{int(audio_rate)/1000:.1f}kHz"
+                        has_audio_str = f"Yes ({audio_codec}, {audio_channels}ch, {audio_rate})"
+                    else:
+                        has_audio_str = "No"
+                    
+                    print("Video analysis complete (using ffprobe).")
+            except Exception as e:
+                print(f"ffprobe analysis failed, falling back to imageio: {e}")
+                analysis_source = "imageio"
+        
+        # Fallback to imageio
+        if analysis_source == "imageio":
+            reader = None
+            try:
+                reader = imageio.get_reader(resolved_path)
+                meta = reader.get_meta_data()
+                
+                # Duration
+                duration_val = meta.get('duration')
+                duration = float(duration_val) if duration_val is not None else 0.0
+                duration_display = f"{duration:.2f}s"
+                
+                # FPS
+                fps_val = meta.get('fps')
+                calculated_fps = float(fps_val) if fps_val is not None else 0.0
+                fps_display = f"{calculated_fps:.1f} FPS"
+                
+                # Resolution
+                size_val = meta.get('size')
+                if isinstance(size_val, tuple) and len(size_val) == 2:
+                    video_width, video_height = int(size_val[0]), int(size_val[1])
+                    resolution_display = f"{video_width}×{video_height}"
+                
+                # Frame count
+                nframes_val = meta.get('nframes')
+                if nframes_val not in [float('inf'), "N/A", None] and isinstance(nframes_val, (int, float)):
+                    num_frames_value = int(nframes_val)
+                    nframes_display = str(num_frames_value)
+                elif duration > 0 and calculated_fps > 0:
+                    num_frames_value = int(duration * calculated_fps)
+                    nframes_display = f"{num_frames_value}"
+                
+                has_audio_str = "Unknown"
+                print("Video analysis complete (using imageio).")
+            except Exception as e:
+                print(f"Error analyzing video with imageio: {e}")
+                return f'<div style="padding: 12px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; color: #721c24;">❌ Error analyzing video: {str(e)}</div>'
+            finally:
+                if reader:
+                    reader.close()
+        
+        # Build HTML display with toolbox-specific details (3x2 layout)
+        # Combine related stats for better readability
+        duration_fps_display = f"{duration_display} @ {fps_display}"
+        codec_bitrate_display = f"{codec_info} • {bitrate_display}"
+        
+        html = f'''
+        <div style="padding: 16px; background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%); border: 1px solid #667eea40; border-radius: 8px; font-family: 'Segoe UI', sans-serif;">
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 8px;">
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">RESOLUTION</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{resolution_display}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FRAMES</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{nframes_display}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">DURATION & FPS</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{duration_fps_display}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">FILE SIZE</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #362e54;">{file_size_display}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #d1ecf1 0%, rgba(209, 236, 241, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #667eea;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">CODEC & BITRATE</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #415e78;">{codec_bitrate_display}</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #bbc1f2 0%, rgba(187, 193, 242, 0.3) 100%); padding: 10px; border-radius: 6px; border-left: 3px solid #764ba2;">
+                    <div style="font-size: 0.8em; color: #292626; margin-bottom: 4px;">AUDIO</div>
+                    <div style="font-size: 1.0em; font-weight: 600; color: #362e54;">{has_audio_str}</div>
+                </div>
+            </div>
+        </div>
+        '''
+        return html
+
     def analyze_video(self, video_path):
         """Analyzes video file and returns detailed information."""
         if not video_path:
@@ -447,11 +661,14 @@ class ToolboxProcessor:
             return "audio" in subprocess.run(cmd, capture_output=True, text=True, check=False).stdout.strip().lower()
         except Exception: return False
 
-    def adjust_frames(self, video_path, fps_mode, speed_factor, use_streaming, output_quality=10, progress=gr.Progress()):
+    def adjust_frames(self, video_path, fps_mode, speed_factor, use_streaming, output_quality=90, progress=gr.Progress()):
         if not video_path: print("No input video for frame adjustment."); return None
         
         # Normalize input path to prevent filename length issues
         video_path = self._normalize_input_path(video_path)
+        
+        # Convert quality (0-100) to CRF (15-35)
+        crf = int(35 - (output_quality / 100) * 20)
         
         interpolation_factor = 1
         if "2x" in fps_mode: interpolation_factor = 2
@@ -464,7 +681,7 @@ class ToolboxProcessor:
 
         temp_video_path = None
         try:
-            print(f"Adjusting frames: Mode={fps_mode}, Speed={speed_factor}x, Streaming: {use_streaming}, Quality: {output_quality}/10")
+            print(f"Adjusting frames: Mode={fps_mode}, Speed={speed_factor}x, Streaming: {use_streaming}, Quality: {output_quality}/100 (CRF {crf})")
             
             # Suppress verbose imageio/ffmpeg warnings about frame rate estimation
             import warnings
@@ -482,7 +699,11 @@ class ToolboxProcessor:
             if use_streaming and should_interpolate:
                 self.rife_handler._ensure_model_downloaded_and_loaded()
                 temp_video_path = self._generate_output_path(video_path, "frames_temp", is_temp=True)
-                writer = imageio.get_writer(temp_video_path, fps=output_fps, quality=output_quality)
+                writer = imageio.get_writer(
+                    temp_video_path, 
+                    fps=output_fps,
+                    ffmpeg_params=['-crf', str(crf), '-preset', 'medium']
+                )
                 frame_iterator = iter(reader)
                 frame1 = next(frame_iterator, None)
                 if frame1 is not None:
@@ -542,13 +763,12 @@ class ToolboxProcessor:
                 import warnings
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore")
-                    # Use ffmpeg_params to suppress verbose output
+                    # Use ffmpeg_params with CRF for quality control
                     imageio.mimwrite(
                         temp_video_path, 
                         processed_frames, 
-                        fps=output_fps, 
-                        quality=output_quality,
-                        ffmpeg_params=['-loglevel', 'error']  # Only show errors, not warnings
+                        fps=output_fps,
+                        ffmpeg_params=['-crf', str(crf), '-preset', 'medium', '-loglevel', 'error']
                     )
             reader.close()
 
@@ -602,7 +822,7 @@ class ToolboxProcessor:
             if temp_video_path and os.path.exists(temp_video_path): os.remove(temp_video_path)
             gc.collect(); torch.cuda.empty_cache()
 
-    def create_loop(self, video_path, loop_type, num_loops, progress=gr.Progress()):
+    def create_loop(self, video_path, loop_type, num_loops, output_quality=90, progress=gr.Progress()):
         """Creates a looped or ping-pong version of the video."""
         if video_path is None:
             print("No input video for loop creation.")
@@ -617,6 +837,9 @@ class ToolboxProcessor:
         # Normalize input path to prevent filename length issues
         video_path = self._normalize_input_path(video_path)
         
+        # Convert quality (0-100) to CRF (15-35)
+        crf = int(35 - (output_quality / 100) * 20)
+        
         progress(0, desc="Initializing loop creation...")
         resolved_video_path = str(Path(video_path).resolve())
         output_path = self._generate_output_path(
@@ -625,7 +848,7 @@ class ToolboxProcessor:
             is_temp=True
         )
         
-        print(f"Creating {loop_type} ({num_loops}x) for {os.path.basename(resolved_video_path)}...")
+        print(f"Creating {loop_type} ({num_loops}x) for {os.path.basename(resolved_video_path)}... Quality: {output_quality}/100 (CRF {crf})")
         
         ping_pong_unit_path = None 
         original_video_has_audio = self._has_audio_stream(resolved_video_path)
@@ -643,6 +866,7 @@ class ToolboxProcessor:
                     self.ffmpeg_exe, "-y", "-loglevel", "error",
                     "-i", resolved_video_path,
                     "-vf", "split[main][tmp];[tmp]reverse[rev];[main][rev]concat=n=2:v=1:a=0",
+                    "-c:v", "libx264", "-crf", str(crf), "-preset", "medium",
                     "-an", str(ping_pong_unit_path)
                 ]
                 subprocess.run(ffmpeg_pp_unit_cmd, check=True, capture_output=True, text=True)
@@ -661,12 +885,12 @@ class ToolboxProcessor:
                         "-i", resolved_video_path,
                         "-filter_complex", f"[1:a]areverse[areva];[1:a][areva]concat=n=2:v=0:a=1[ppa];[ppa]aloop=loop={num_loops-1}:size=2147483647[a_looped]",
                         "-map", "0:v:0", "-map", "[a_looped]",
-                        "-c:v", "copy",
+                        "-c:v", "libx264", "-crf", str(crf), "-preset", "medium",
                         "-c:a", "aac", "-b:a", "192k", "-shortest"
                     ])
                 else:
                     print("No audio in original or detection issue. Creating video-only ping-pong loop.")
-                    ffmpeg_cmd.extend(["-c:v", "copy", "-an"])
+                    ffmpeg_cmd.extend(["-c:v", "libx264", "-crf", str(crf), "-preset", "medium", "-an"])
 
                 ffmpeg_cmd.append(str(output_path))
 
@@ -683,7 +907,7 @@ class ToolboxProcessor:
                     self.ffmpeg_exe, "-y", "-loglevel", "error",
                     "-stream_loop", str(ffmpeg_stream_loop_value),
                     "-i", resolved_video_path,
-                    "-c:v", "copy" 
+                    "-c:v", "libx264", "-crf", str(crf), "-preset", "medium"
                 ]
                 if original_video_has_audio:
                     print("Original video has audio. Re-encoding to AAC for looped MP4 (if not already AAC).")
